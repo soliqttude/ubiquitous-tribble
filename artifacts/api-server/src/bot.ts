@@ -16,18 +16,18 @@ const DATA_DIR = path.resolve(__dirname, "../data");
 const DATA_FILE = path.join(DATA_DIR, "bot-data.json");
 const PREFIX = ",";
 
-interface UserData {
+interface TargetData {
   reactions: string[];
 }
 
 interface BotData {
-  authorized: Record<string, UserData>;
+  targets: Record<string, TargetData>;
 }
 
 function loadData(): BotData {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(DATA_FILE)) {
-    const initial: BotData = { authorized: {} };
+    const initial: BotData = { targets: {} };
     writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
     return initial;
   }
@@ -39,17 +39,27 @@ function saveData(data: BotData): void {
   writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+function parseMention(text: string): string | null {
+  const match = text.match(/^<@!?(\d+)>$/) ?? text.match(/^(\d{17,20})$/);
+  return match?.[1] ?? null;
+}
+
 function extractEmojis(text: string): string[] {
-  const emojiRegex =
+  const unicodeRegex =
     /(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/gu;
-  const unicodeMatches = text.match(emojiRegex) ?? [];
-
-  const customEmojiRegex = /<a?:[a-zA-Z0-9_]+:\d+>/g;
-  const customMatches = text.match(customEmojiRegex) ?? [];
-
+  const unicodeMatches = text.match(unicodeRegex) ?? [];
+  const customMatches = text.match(/<a?:[a-zA-Z0-9_]+:\d+>/g) ?? [];
   return [...unicodeMatches, ...customMatches].filter(
     (e, i, arr) => arr.indexOf(e) === i
   );
+}
+
+function isOwner(authorId: string): boolean {
+  return authorId === OWNER_ID;
+}
+
+async function rejectUnauthorized(message: Message): Promise<void> {
+  await message.reply("❌ ask **@remandment** for access.");
 }
 
 export function startBot(): void {
@@ -79,154 +89,110 @@ export function startBot(): void {
     const content = message.content.trim();
     const authorId = message.author.id;
 
+    // ── Commands ────────────────────────────────────────────────────────────
     if (content.startsWith(PREFIX)) {
       const withoutPrefix = content.slice(PREFIX.length).trim();
       const parts = withoutPrefix.split(/\s+/);
       const command = parts[0]?.toLowerCase();
 
-      if (command === "sys" && parts[1]?.toLowerCase() === "auth") {
-        if (authorId !== OWNER_ID) {
-          await message.reply(
-            "❌ ask **@remandment** for access."
-          );
-          return;
-        }
-        const targetId = parts[2];
-        if (!targetId) {
-          await message.reply("Usage: `,sys auth <user_id>`");
-          return;
-        }
-        const data = loadData();
-        if (data.authorized[targetId]) {
-          await message.reply(`⚠️ <@${targetId}> already has access.`);
-          return;
-        }
-        data.authorized[targetId] = { reactions: ["✅"] };
-        saveData(data);
-        await message.reply(`✅ Granted access to <@${targetId}>.`);
-        return;
-      }
-
-      if (command === "sys" && parts[1]?.toLowerCase() === "revoke") {
-        if (authorId !== OWNER_ID) {
-          await message.reply(
-            "❌ ask **@remandment** for access."
-          );
-          return;
-        }
-        const targetId = parts[2];
-        if (!targetId) {
-          await message.reply("Usage: `,sys revoke <user_id>`");
-          return;
-        }
-        const data = loadData();
-        if (!data.authorized[targetId]) {
-          await message.reply(`⚠️ <@${targetId}> doesn't have access.`);
-          return;
-        }
-        delete data.authorized[targetId];
-        saveData(data);
-        await message.reply(`🗑️ Revoked access from <@${targetId}>.`);
-        return;
-      }
-
+      // ,autoreact @user 💩 🤡  — set reactions on a target
+      // ,autoreact remove @user  — remove a target
+      // ,autoreact list          — show all targets
       if (command === "autoreact") {
-        const subcommand = parts[1]?.toLowerCase();
-
-        if (subcommand === "customize") {
-          const data = loadData();
-          const isOwner = authorId === OWNER_ID;
-          const isAuthorized = !!data.authorized[authorId];
-
-          if (!isOwner && !isAuthorized) {
-            await message.reply(
-              "❌ ask **@remandment** for access."
-            );
-            return;
-          }
-
-          const emojiText = withoutPrefix.slice("autoreact customize".length).trim();
-          const emojis = extractEmojis(emojiText);
-
-          if (emojis.length === 0) {
-            await message.reply(
-              "❌ No valid emojis found. Usage: `,autoreact customize 🤡 🎭 🔥`"
-            );
-            return;
-          }
-
-          if (isOwner && !isAuthorized) {
-            data.authorized[authorId] = { reactions: emojis };
-          } else {
-            data.authorized[authorId]!.reactions = emojis;
-          }
-          saveData(data);
-          await message.reply(
-            `✅ Auto-react set to: ${emojis.join(" ")}`
-          );
+        if (!isOwner(authorId)) {
+          await rejectUnauthorized(message);
           return;
         }
 
-        if (subcommand === "list") {
-          const isOwner = authorId === OWNER_ID;
+        const sub = parts[1]?.toLowerCase();
+
+        // ,autoreact list
+        if (sub === "list") {
           const data = loadData();
-          if (!isOwner && !data.authorized[authorId]) {
-            await message.reply("❌ ask **@remandment** for access.");
-            return;
-          }
-          const entries = Object.entries(data.authorized);
+          const entries = Object.entries(data.targets);
           if (entries.length === 0) {
-            await message.reply("No authorized users yet.");
+            await message.reply("No targets set yet.");
             return;
           }
           const lines = entries.map(
-            ([id, ud]) => `<@${id}>: ${ud.reactions.join(" ")}`
+            ([id, t]) => `<@${id}> → ${t.reactions.join(" ") || "(no reactions)"}`
           );
-          await message.reply(`📋 Authorized users:\n${lines.join("\n")}`);
+          await message.reply(`📋 Active targets:\n${lines.join("\n")}`);
           return;
         }
 
-        if (subcommand === "clear") {
-          const data = loadData();
-          const isOwner = authorId === OWNER_ID;
-          const isAuthorized = !!data.authorized[authorId];
-          if (!isOwner && !isAuthorized) {
-            await message.reply("❌ ask **@remandment** for access.");
+        // ,autoreact remove @user
+        if (sub === "remove") {
+          const targetId = parseMention(parts[2] ?? "");
+          if (!targetId) {
+            await message.reply("Usage: `,autoreact remove @user`");
             return;
           }
-          if (isAuthorized) {
-            data.authorized[authorId]!.reactions = [];
-            saveData(data);
+          const data = loadData();
+          if (!data.targets[targetId]) {
+            await message.reply(`⚠️ <@${targetId}> is not a target.`);
+            return;
           }
-          await message.reply("🗑️ Your auto-reactions cleared.");
+          delete data.targets[targetId];
+          saveData(data);
+          await message.reply(`🗑️ Removed <@${targetId}> from targets.`);
           return;
         }
+
+        // ,autoreact @user 💩 🤡
+        const targetId = parseMention(parts[1] ?? "");
+        if (!targetId) {
+          await message.reply(
+            "Usage:\n" +
+            "• `,autoreact @user 💩 🤡` — set reactions on a target\n" +
+            "• `,autoreact remove @user` — remove a target\n" +
+            "• `,autoreact list` — show all targets"
+          );
+          return;
+        }
+
+        // everything after the mention is emojis
+        const emojiText = parts.slice(2).join(" ");
+        const emojis = extractEmojis(emojiText);
+
+        if (emojis.length === 0) {
+          await message.reply("❌ No valid emojis found after the mention.");
+          return;
+        }
+
+        const data = loadData();
+        data.targets[targetId] = { reactions: emojis };
+        saveData(data);
+        await message.reply(
+          `✅ Every message from <@${targetId}> will get: ${emojis.join(" ")}`
+        );
+        return;
       }
 
-      const data = loadData();
-      const isOwner = authorId === OWNER_ID;
-      const isAuthorized = !!data.authorized[authorId];
-      if (!isOwner && !isAuthorized) {
-        await message.reply("❌ ask **@remandment** for access.");
+      // ,sys auth / ,sys revoke — kept for granting bot command access to others
+      if (command === "sys") {
+        if (!isOwner(authorId)) {
+          await rejectUnauthorized(message);
+          return;
+        }
+        // reserved for future use
+        await message.reply("Unknown sys command.");
         return;
+      }
+
+      // any other command by a non-owner
+      if (!isOwner(authorId)) {
+        await rejectUnauthorized(message);
       }
       return;
     }
 
+    // ── Auto-react ──────────────────────────────────────────────────────────
     const data = loadData();
-    const isOwner = authorId === OWNER_ID;
-    const userData = data.authorized[authorId];
+    const target = data.targets[authorId];
+    if (!target || target.reactions.length === 0) return;
 
-    if (!isOwner && !userData) return;
-
-    const reactions =
-      userData?.reactions?.length
-        ? userData.reactions
-        : isOwner && !userData
-        ? []
-        : [];
-
-    for (const emoji of reactions) {
+    for (const emoji of target.reactions) {
       try {
         await message.react(emoji);
       } catch {
