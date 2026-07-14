@@ -180,6 +180,24 @@ export function startBot(): void {
 
         const sub = parts[1]?.toLowerCase();
 
+        // ,autoreact @user 💩 🤡 — OWNER ONLY: force-set reactions on any user
+        const targetMention = parseMention(parts[1] ?? "");
+        if (targetMention && isOwner(authorId)) {
+          const emojiText = parts.slice(2).join(" ");
+          const emojis = extractEmojis(emojiText);
+          if (emojis.length === 0) {
+            await message.reply("❌ No valid emojis found.\nUsage: `,autoreact @user 💩 🤡`");
+            return;
+          }
+          if (!data.authorized[targetMention]) {
+            data.authorized[targetMention] = { reactions: [] };
+          }
+          data.authorized[targetMention]!.reactions = emojis;
+          saveData(data);
+          await message.reply(`✅ Every message from <@${targetMention}> will get: ${emojis.join(" ")}`);
+          return;
+        }
+
         // ,autoreact list — show all authorized users and their reactions
         if (sub === "list") {
           const entries = Object.entries(data.authorized);
