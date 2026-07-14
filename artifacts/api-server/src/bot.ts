@@ -137,9 +137,18 @@ export function startBot(): void {
           }
           data.authorized[targetId] = { reactions: [] };
           saveData(data);
-          await message.reply(
-            `✅ <@${targetId}> is now authorized.\nThey can set their reactions with \`,autoreact customize 💩 🤡\``
-          );
+          await message.reply("ok.");
+          try {
+            const dmUser = await client.users.fetch(targetId);
+            await dmUser.send(
+              "hey — you've been given access to the autoreact bot.\n\n" +
+              "**Your commands:**\n" +
+              "• `,autoreact @user 💩 🤡` — make the bot react to someone's messages\n" +
+              "• `,autoreact customize 💩 🤡` — set reactions on your own messages\n" +
+              "• `,autoreact clear` — remove your reactions\n" +
+              "• `,autoreact list` — see everyone's reactions"
+            );
+          } catch {}
           return;
         }
 
@@ -180,9 +189,9 @@ export function startBot(): void {
 
         const sub = parts[1]?.toLowerCase();
 
-        // ,autoreact @user 💩 🤡 — OWNER ONLY: force-set reactions on any user
+        // ,autoreact @user 💩 🤡 — any authorized user can set reactions on anyone
         const targetMention = parseMention(parts[1] ?? "");
-        if (targetMention && isOwner(authorId)) {
+        if (targetMention) {
           const emojiText = parts.slice(2).join(" ");
           const emojis = extractEmojis(emojiText);
           if (emojis.length === 0) {
